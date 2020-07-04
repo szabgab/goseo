@@ -9,10 +9,13 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
 
 	"golang.org/x/net/html"
 )
 
+// TODO: collect which page(s) link to every given external page
+// TODO: report which page(s) have broken links, make sure we report all of our pages, not just the first one with this link.
 func checkExternalURLs(externalURLs *list.List, externalPages map[string]int) {
 	log.Println("checkExternalURLs")
 	for {
@@ -41,7 +44,7 @@ func checkExternalURLs(externalURLs *list.List, externalPages map[string]int) {
 	}
 }
 
-func parseHTML(body io.ReadCloser, internalURLS *list.List, externalURLS *list.List) {
+func parseHTML(body io.ReadCloser, internalURLs *list.List, externalURLS *list.List) {
 	tokenizer := html.NewTokenizer(body)
 	for {
 		tt := tokenizer.Next()
@@ -76,7 +79,7 @@ func parseHTML(body io.ReadCloser, internalURLS *list.List, externalURLS *list.L
 					externalURLS.PushBack(href)
 				} else {
 					//log.Printf("Internal: %v\n", href)
-					internalURLS.PushBack(href)
+					internalURLs.PushBack(href)
 				}
 			}
 			if !moreAttr {
@@ -87,8 +90,8 @@ func parseHTML(body io.ReadCloser, internalURLS *list.List, externalURLS *list.L
 	}
 }
 
-func processURL(currentURL string, externalPages map[string]int) {
-	internalURLs := list.New()
+func processURL(currentURL string, externalPages map[string]int, internalURLs *list.List) {
+	log.Printf("Processing page: %v", currentURL)
 	externalURLs := list.New()
 
 	resp, err := http.Get(currentURL)
@@ -106,24 +109,18 @@ func processURL(currentURL string, externalPages map[string]int) {
 	//fmt.Printf("%T", resp)
 	defer resp.Body.Close()
 	parseHTML(resp.Body, internalURLs, externalURLs)
-	for {
-		if internalURLs.Len() == 0 {
-			break
-		}
-		item := internalURLs.Front()
-		log.Printf("internalURL: %v", item.Value)
-		internalURLs.Remove(item)
-	}
 	checkExternalURLs(externalURLs, externalPages)
 
 	return
 }
 
 func main() {
-	var host string
 	externalPages := make(map[string]int)
 
+	var host string
+	var limit int
 	flag.StringVar(&host, "host", "", "The URL of the host")
+	flag.IntVar(&limit, "limit", 0, "The max number of pages to visit")
 	flag.Parse()
 	if host == "" {
 		fmt.Println("Need --host")
@@ -135,7 +132,28 @@ func main() {
 	// TODO: stop on Nth error?
 	log.Printf("Host: %v", host)
 
-	processURL(host, externalPages)
+	internalURLs := list.New()
+	count := 1
+	processURL(host, externalPages, internalURLs)
+
+	host = strings.TrimSuffix(host, "/")
+	for {
+		if internalURLs.Len() == 0 {
+			break
+		}
+		if limit > 0 && count >= limit {
+			log.Printf("Limit of %v pages was reached", limit)
+			break
+		}
+		count++
+		item := internalURLs.Front()
+		thisPage := strings.TrimPrefix(item.Value.(string), "/")
+		thisURL := host + "/" + thisPage
+		//log.Printf("internalURL: %v", thisURL)
+		processURL(thisURL, externalPages, internalURLs)
+		internalURLs.Remove(item)
+	}
+
 	log.Println("------ Report ----")
 	for key, value := range externalPages {
 		fmt.Printf("%-4d  %s\n", value, key)
